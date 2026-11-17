@@ -3,7 +3,7 @@
 /*
  * The core sip module code.
  *
- * Copyright (c) 2025 Phil Thompson <phil@riverbankcomputing.com>
+ * Copyright (c) 2026 Phil Thompson <phil@riverbankcomputing.com>
  */
 
 
@@ -160,9 +160,7 @@ static sipWrapperType sipWrapper_Type = {
             0,              /* am_await */
             0,              /* am_aiter */
             0,              /* am_anext */
-#if PY_VERSION_HEX >= 0x030a0000
             0,              /* am_send */
-#endif
         },
         {
             0,              /* nb_add */
@@ -248,7 +246,7 @@ static PyObject *sip_api_build_result(int *isErr, const char *fmt, ...);
 static PyObject *sip_api_call_method(int *isErr, PyObject *method,
         const char *fmt, ...);
 static void sip_api_call_procedure_method(sip_gilstate_t gil_state,
-        sipVirtErrorHandlerFunc error_handler, sipSimpleWrapper *py_self,
+        sipVirtErrorHandler error_handler, sipSimpleWrapper *py_self,
         PyObject *method, const char *fmt, ...);
 static Py_ssize_t sip_api_convert_from_sequence_index(Py_ssize_t idx,
         Py_ssize_t len);
@@ -273,11 +271,11 @@ static PyObject *sip_api_convert_from_new_pytype(void *cpp,
 static int sip_api_get_state(PyObject *transferObj);
 static PyObject *sip_api_get_pyobject(void *cppPtr, const sipTypeDef *td);
 static int sip_api_parse_result_ex(sip_gilstate_t gil_state,
-        sipVirtErrorHandlerFunc error_handler, sipSimpleWrapper *py_self,
+        sipVirtErrorHandler error_handler, sipSimpleWrapper *py_self,
         PyObject *method, PyObject *res, const char *fmt, ...);
 static int sip_api_parse_result(int *isErr, PyObject *method, PyObject *res,
         const char *fmt, ...);
-static void sip_api_call_error_handler(sipVirtErrorHandlerFunc error_handler,
+static void sip_api_call_error_handler(sipVirtErrorHandler error_handler,
         sipSimpleWrapper *py_self, sip_gilstate_t gil_state);
 static void sip_api_trace(unsigned mask,const char *fmt,...);
 static void sip_api_transfer_back(PyObject *self);
@@ -390,6 +388,12 @@ static void sip_api_visit_wrappers(sipWrapperVisitorFunc visitor,
         void *closure);
 static int sip_api_register_exit_notifier(PyMethodDef *md);
 static sipExceptionHandler sip_api_next_exception_handler(void **statep);
+static PyTypeObject *sip_api_get_py_type_ref(const sipTypeDef *td);
+static sipAssignFunc sip_api_get_assignment_function(const sipTypeDef *td);
+static sipObjectGuard *sip_api_object_guard_new(PyObject *obj);
+static PyObject *sip_api_object_guard_get_ref(sipObjectGuard *obj_guard,
+        sip_gilstate_t *gs_p);
+static void sip_api_object_guard_release(sipObjectGuard *obj_guard);
 
 
 /*
@@ -498,8 +502,8 @@ static const sipAPIDef sip_api = {
     sip_api_register_exit_notifier,
     sip_api_is_enum_flag,
     sip_api_py_type_dict_ref,
-    NULL,
-    NULL,
+    sip_api_get_py_type_ref,
+    sip_api_get_assignment_function,
     NULL,
     NULL,
     /*
@@ -549,6 +553,12 @@ static const sipAPIDef sip_api = {
     NULL,
     NULL,
     NULL,
+    /*
+     * The following are part of the public API.
+     */
+    sip_api_object_guard_new,
+    sip_api_object_guard_get_ref,
+    sip_api_object_guard_release,
 };
 
 
@@ -666,7 +676,6 @@ static PyObject **unused_backdoor = NULL;   /* For passing dict of unused argume
 
 static PyObject *init_name = NULL;      /* '__init__'. */
 static PyObject *empty_tuple;           /* The empty tuple. */
-static PyObject *type_unpickler;        /* The type unpickler function. */
 static sipSymbol *sipSymbolList = NULL; /* The list of published symbols. */
 static sipAttrGetter *sipAttrGetters = NULL;  /* The list of attribute getters. */
 static sipProxyResolver *proxyResolvers = NULL; /* The list of proxy resolvers. */
@@ -846,7 +855,6 @@ static int user_state_is_valid(const sipTypeDef *td, void **user_statep);
 const sipAPIDef *sip_init_library(PyObject *mod_dict)
 {
     static PyMethodDef methods[] = {
-        /* The type unpickler must be first. */
         {"_unpickle_type", unpickle_type, METH_VARARGS, NULL},
         {"assign", assign, METH_VARARGS, NULL},
         {"cast", cast, METH_VARARGS, NULL},
@@ -901,12 +909,6 @@ const sipAPIDef *sip_init_library(PyObject *mod_dict)
 
         if (sip_dict_set_and_discard(mod_dict, md->ml_name, meth) < 0)
             return NULL;
-
-        if (md == &methods[0])
-        {
-            Py_INCREF(meth);
-            type_unpickler = meth;
-        }
     }
 
     /* Initialise the types. */
@@ -2003,7 +2005,7 @@ static PyObject *call_method(PyObject *method, const char *fmt, va_list va)
  * value and handle the result..
  */
 static void sip_api_call_procedure_method(sip_gilstate_t gil_state,
-        sipVirtErrorHandlerFunc error_handler, sipSimpleWrapper *py_self,
+        sipVirtErrorHandler error_handler, sipSimpleWrapper *py_self,
         PyObject *method, const char *fmt, ...)
 {
     PyObject *res;
@@ -2418,7 +2420,7 @@ static int sip_api_parse_result(int *isErr, PyObject *method, PyObject *res,
  * Parse a result object based on a format string.
  */
 static int sip_api_parse_result_ex(sip_gilstate_t gil_state,
-        sipVirtErrorHandlerFunc error_handler, sipSimpleWrapper *py_self,
+        sipVirtErrorHandler error_handler, sipSimpleWrapper *py_self,
         PyObject *method, PyObject *res, const char *fmt, ...)
 {
     int rc;
@@ -2453,7 +2455,7 @@ static int sip_api_parse_result_ex(sip_gilstate_t gil_state,
  * Call a virtual error handler.  This is called with the GIL and from the
  * thread that raised the error.
  */
-static void sip_api_call_error_handler(sipVirtErrorHandlerFunc error_handler,
+static void sip_api_call_error_handler(sipVirtErrorHandler error_handler,
         sipSimpleWrapper *py_self, sip_gilstate_t sipGILState)
 {
     if (error_handler != NULL)
@@ -3549,7 +3551,7 @@ static int parsePass1(PyObject **parseErrp, PyObject **selfp, int *selfargp,
             td = va_arg(va, sipTypeDef *);
             va_arg(va, void **);
 
-            if (PyObject_TypeCheck(self, (PyTypeObject *)&sipSimpleWrapper_Type))
+            if (self != NULL && PyObject_TypeCheck(self, (PyTypeObject *)&sipSimpleWrapper_Type))
             {
                 /* The call was self.method(...). */
                 *selfp = self;
@@ -3972,7 +3974,7 @@ static int parsePass1(PyObject **parseErrp, PyObject **selfp, int *selfargp,
                 else
                     va_arg(va, int *);
 
-                if (sipTypeNeedsUserState(td))
+                if (td != NULL && sipTypeNeedsUserState(td))
                     va_arg(va, void **);
 
                 if (arg != NULL && !sip_api_can_convert_to_type(arg, td, iflgs))
@@ -5268,6 +5270,7 @@ static PyObject *convertToSequence(void *array, Py_ssize_t nr_elem,
         {
             release(el, td, 0, NULL);
             Py_DECREF(seq);
+            return NULL;
         }
 
         PyTuple_SET_ITEM(seq, i, el_obj);
@@ -5851,7 +5854,7 @@ static sipExportedModuleDef *getModule(PyObject *mname_obj)
 
 
 /*
- * The type unpickler.
+ * The legacy type unpickler.
  */
 static PyObject *unpickle_type(PyObject *obj, PyObject *args)
 {
@@ -5933,8 +5936,7 @@ static PyObject *pickle_type(PyObject *obj, PyObject *args)
                         return NULL;
                     }
 
-                    return Py_BuildValue("O(OsN)", type_unpickler,
-                            em->em_nameobj, pyname, init_args);
+                    return Py_BuildValue("ON", Py_TYPE(obj), init_args);
                 }
         }
     }
@@ -6325,6 +6327,22 @@ int sip_add_all_lazy_attrs(const sipTypeDef *td)
 
 
 /*
+ * Return the assignment helper function for a type or NULL if it doesn't have
+ * one.
+ */
+static sipAssignFunc sip_api_get_assignment_function(const sipTypeDef *td)
+{
+    if (sipTypeIsClass(td))
+        return ((sipClassTypeDef *)td)->ctd_assign;
+
+    if (sipTypeIsMapped(td))
+        return ((sipMappedTypeDef *)td)->mtd_assign;
+
+    return NULL;
+}
+
+
+/*
  * Return the generated type structure corresponding to the given Python type
  * object.
  */
@@ -6334,6 +6352,20 @@ static const sipTypeDef *sip_api_type_from_py_type_object(PyTypeObject *py_type)
         return ((sipWrapperType *)py_type)->wt_td;
 
     return sip_enum_get_generated_type((PyObject *)py_type);
+}
+
+
+/*
+ * Return a new reference to the Python type object for a generated type or
+ * NULL if there was an error.
+ */
+static PyTypeObject *sip_api_get_py_type_ref(const sipTypeDef *td)
+{
+    PyTypeObject *py_type = td->td_py_type;
+
+    Py_INCREF(py_type);
+
+    return py_type;
 }
 
 
@@ -6685,21 +6717,25 @@ int sip_api_deprecated(const char *classname, const char *method)
 int sip_api_deprecated_13_9(const char *classname, const char *method,
         const char *message)
 {
-    char buf[100];
+    const unsigned int bufsize = 100 + ( message ? strlen(message) : 0 );
+    char *buf = (char*)sip_api_malloc(bufsize * sizeof(char));
+    unsigned int written = 0;
 
     if (classname == NULL)
-        PyOS_snprintf(buf, sizeof (buf), "%s() is deprecated", method);
+        written = PyOS_snprintf(buf, bufsize, "%s() is deprecated", method);
     else if (method == NULL)
-        PyOS_snprintf(buf, sizeof (buf), "%s constructor is deprecated",
-                classname);
+        written = PyOS_snprintf(buf, bufsize, "%s constructor is deprecated",
+				classname);
     else
-        PyOS_snprintf(buf, sizeof (buf), "%s.%s() is deprecated", classname,
-                method );
+        written = PyOS_snprintf(buf, bufsize, "%s.%s() is deprecated", classname,
+				method );
 
     if (message != NULL)
-        PyOS_snprintf(&buf[strlen(buf)], sizeof (buf), ": %s", message);
+        PyOS_snprintf(buf+written, bufsize-written, ": %s", message);
 
-    return PyErr_WarnEx(PyExc_DeprecationWarning, buf, 1);
+    const int res = PyErr_WarnEx(PyExc_DeprecationWarning, buf, 1);
+    sip_api_free(buf); 
+    return res;
 }
 
 
@@ -6854,7 +6890,12 @@ static void sip_api_transfer_to(PyObject *self, PyObject *owner)
 
         if (owner == NULL)
         {
-            /* There is no owner. */
+            /*
+             * There is no owner.  This code implements
+             * 'sip.transferto(obj, None)' but it's likely that the correct
+             * implementation is that in the following block.  We choose to
+             * leave this as it is to avoid breaking user code.
+             */
 
             if (sipCppHasRef(sw))
             {
@@ -6874,9 +6915,8 @@ static void sip_api_transfer_to(PyObject *self, PyObject *owner)
             /*
              * The owner is a C++ instance and not a Python object (ie. there
              * is no parent) so there is an explicit extra reference to keep
-             * this Python object alive.  Note that there is no way to
-             * specify this from a .sip file - it is useful when embedding in
-             * C/C++ applications.
+             * this Python object alive.  This code implements the
+             * '/TransferThis/' function annotation.
              */
 
             if (!sipCppHasRef(sw))
@@ -7075,43 +7115,51 @@ static int addStringInstances(PyObject *dict, sipStringInstanceDef *si)
     {
         PyObject *w;
 
-        switch (si->si_encoding)
+        if (si->si_val == NULL)
         {
-        case 'A':
-            w = PyUnicode_DecodeASCII(si->si_val, strlen(si->si_val), NULL);
-            break;
+            w = Py_None;
+            Py_INCREF(w);
+        }
+        else
+        {
+            switch (si->si_encoding)
+            {
+            case 'A':
+                w = PyUnicode_DecodeASCII(si->si_val, strlen(si->si_val), NULL);
+                break;
 
-        case 'L':
-            w = PyUnicode_DecodeLatin1(si->si_val, strlen(si->si_val), NULL);
-            break;
+            case 'L':
+                w = PyUnicode_DecodeLatin1(si->si_val, strlen(si->si_val), NULL);
+                break;
 
-        case '8':
-            w = PyUnicode_FromString(si->si_val);
-            break;
+            case '8':
+                w = PyUnicode_FromString(si->si_val);
+                break;
 
-        case 'w':
-            /* The hack for wchar_t. */
+            case 'w':
+                /* The hack for wchar_t. */
 #if defined(HAVE_WCHAR_H)
-            w = PyUnicode_FromWideChar((const wchar_t *)si->si_val, 1);
-            break;
+                w = PyUnicode_FromWideChar((const wchar_t *)si->si_val, 1);
+                break;
 #else
-            raiseNoWChar();
-            return -1;
+                raiseNoWChar();
+                return -1;
 #endif
 
         case 'W':
-            /* The hack for wchar_t*. */
+                /* The hack for wchar_t*. */
 #if defined(HAVE_WCHAR_H)
-            w = PyUnicode_FromWideChar((const wchar_t *)si->si_val,
-                    wcslen((const wchar_t *)si->si_val));
-            break;
+                w = PyUnicode_FromWideChar((const wchar_t *)si->si_val,
+                        wcslen((const wchar_t *)si->si_val));
+                break;
 #else
-            raiseNoWChar();
-            return -1;
+                raiseNoWChar();
+                return -1;
 #endif
 
-        default:
-            w = PyBytes_FromString(si->si_val);
+            default:
+                w = PyBytes_FromString(si->si_val);
+            }
         }
 
         if (sip_dict_set_and_discard(dict, si->si_name, w) < 0)
@@ -7352,9 +7400,7 @@ static PyObject *sip_api_is_py_method_12_8(sip_gilstate_t *gil, char *pymc,
     if (sipInterpreter == NULL)
         return NULL;
 
-#ifdef WITH_THREAD
     *gil = PyGILState_Ensure();
-#endif
 
     /* Only read this when we have the GIL. */
     sipSelf = *sipSelfp;
@@ -7486,17 +7532,13 @@ static PyObject *sip_api_is_py_method_12_8(sip_gilstate_t *gil, char *pymc,
             PyErr_Print();
         }
 
-#ifdef WITH_THREAD
         PyGILState_Release(*gil);
-#endif
     }
 
     return reimp;
 
 release_gil:
-#ifdef WITH_THREAD
     PyGILState_Release(*gil);
-#endif
     return NULL;
 }
 
@@ -8060,6 +8102,7 @@ static PyObject *sip_api_convert_from_new_type(void *cpp, const sipTypeDef *td,
 {
     sipWrapper *owner;
     sipConvertFromFunc cfrom;
+    PyObject *res;
 
     /* Handle None. */
     if (cpp == NULL)
@@ -8074,9 +8117,7 @@ static PyObject *sip_api_convert_from_new_type(void *cpp, const sipTypeDef *td,
 
     if (cfrom != NULL)
     {
-        PyObject *res = cfrom(cpp, transferObj);
-
-        if (res != NULL)
+        if ((res = cfrom(cpp, transferObj)) != NULL)
         {
             /*
              * We no longer need the C/C++ instance so we release it (unless
@@ -8095,6 +8136,25 @@ static PyObject *sip_api_convert_from_new_type(void *cpp, const sipTypeDef *td,
     {
         raise_no_convert_from(td);
         return NULL;
+    }
+
+    /*
+     * Check to see if we already have a wrapper.  Although the context that
+     * this called is expecting a new C++ instance, the instance may have been
+     * created by a Python reimplementation of a C++ virtual, ie. there is
+     * already a wrapper and it may have Python-only attributes that we want to
+     * preserve.
+     */
+    if ((res = sip_api_get_pyobject(cpp, td)) != NULL)
+    {
+        Py_INCREF(res);
+
+        if (transferObj == NULL || transferObj == Py_None)
+            sip_api_transfer_back(res);
+        else
+            sip_api_transfer_to(res, transferObj);
+
+        return res;
     }
 
     /* Apply any sub-class convertor. */
@@ -8428,7 +8488,6 @@ static void *findSlot(PyObject *self, sipPySlotType st)
     PyTypeObject *py_type = Py_TYPE(self);
 
     /* See if it is a wrapper. */
-    /* TODO: will this always be TRUE? */
     if (PyObject_TypeCheck((PyObject *)py_type, &sipWrapperType_Type))
     {
         const sipClassTypeDef *ctd;
@@ -8436,6 +8495,19 @@ static void *findSlot(PyObject *self, sipPySlotType st)
         ctd = (sipClassTypeDef *)((sipWrapperType *)(py_type))->wt_td;
 
         slot = findSlotInClass(ctd, st);
+    }
+    else
+    {
+        sipEnumTypeDef *etd;
+
+        /* If it is not a wrapper then it must be an enum. */
+        etd = (sipEnumTypeDef *)sip_enum_get_generated_type(
+                (PyObject *)py_type);
+
+        assert(etd != NULL);
+        assert(etd->etd_pyslots != NULL);
+
+        slot = findSlotInSlotList(etd->etd_pyslots, st);
     }
 
     return slot;
@@ -8610,7 +8682,7 @@ static PyObject *sipWrapperType_alloc(PyTypeObject *self, Py_ssize_t nitems)
 
         ((sipWrapperType *)o)->wt_td = currentType;
 
-        if (sipTypeIsClass(currentType))
+        if (sipTypeIsClass(currentType) || sipTypeIsNamespace(currentType))
         {
             const sipClassTypeDef *ctd = (const sipClassTypeDef *)currentType;
             const char *docstring = ctd->ctd_docstring;
@@ -9666,9 +9738,7 @@ sipWrapperType sipSimpleWrapper_Type = {
             0,              /* am_await */
             0,              /* am_aiter */
             0,              /* am_anext */
-#if PY_VERSION_HEX >= 0x030a0000
             0,              /* am_send */
-#endif
         },
         {
             0,              /* nb_add */
@@ -11182,7 +11252,7 @@ static PyObject *sip_api_py_type_dict_ref(PyTypeObject *py_type)
 
 
 /*
- * Get the name of a Python type (on behalf of the limited API).
+ * Get the unqualified name of a Python type.
  */
 static const char *sip_api_py_type_name(const PyTypeObject *py_type)
 {
@@ -11932,4 +12002,39 @@ sipExceptionHandler sip_api_next_exception_handler(void **statep)
     *statep = em;
 
     return em->em_exception_handler;
+}
+
+
+/*
+ * Create a new guard for an object.  Returns NULL with an exception raised if
+ * there was an error.
+ */
+static sipObjectGuard *sip_api_object_guard_new(PyObject *obj)
+{
+    /* In this implementation the guard is the object. */
+    return Py_NewRef(obj);
+}
+
+
+/*
+ * Return a new reference to a guarded object and a sip_gilstate_t for the
+ * (now attached) thread state.  The token must be passed to SIP_RELEASE_GIL()
+ * once the reference to the guarded object has been released.  This may be
+ * called without an attached thread state.
+ */
+static PyObject *sip_api_object_guard_get_ref(sipObjectGuard *obj_guard,
+        sip_gilstate_t *gs_p)
+{
+    *gs_p = PyGILState_Ensure();
+
+    return Py_NewRef(obj_guard);
+}
+
+
+/*
+ * Release a guarded object.
+ */
+static void sip_api_object_guard_release(sipObjectGuard *obj_guard)
+{
+    Py_DECREF(obj_guard);
 }

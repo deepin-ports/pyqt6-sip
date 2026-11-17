@@ -1,3 +1,56 @@
+pyqt6-sip (13.13.0-1) unstable; urgency=medium
+
+  * New upstream release.
+  * Bump upstream copyright year.
+
+ -- Dmitry Shachnev <mitya57@debian.org>  Fri, 30 Oct 2026 23:58:52 +0300
+
+pyqt6-sip (13.12.0-1) unstable; urgency=medium
+
+  * New upstream release.
+  * Update to debhelper compat level 14.
+    - Build-depend on dh-sequence-single-binary.
+    - Remove explicit Depends line.
+
+ -- Dmitry Shachnev <mitya57@debian.org>  Sat, 08 Aug 2026 01:01:19 +0300
+
+pyqt6-sip (13.11.1-1) unstable; urgency=medium
+
+  * New upstream release.
+  * Bump Standards-Version to 4.7.4, no changes needed.
+
+ -- Dmitry Shachnev <mitya57@debian.org>  Wed, 08 Apr 2026 18:40:01 +0300
+
+pyqt6-sip (13.11.0-1) unstable; urgency=medium
+
+  * New upstream release.
+  * Drop ‘Priority: optional’, it became default in dpkg 1.22.12.
+  * Bump Standards-Version to 4.7.3.
+
+ -- Dmitry Shachnev <mitya57@debian.org>  Thu, 05 Feb 2026 11:58:26 +0300
+
+pyqt6-sip (13.10.3-1) unstable; urgency=medium
+
+  * New upstream release.
+
+ -- Dmitry Shachnev <mitya57@debian.org>  Sun, 21 Dec 2025 12:12:57 +0300
+
+pyqt6-sip (13.10.2-2) unstable; urgency=medium
+
+  * Drop ‘Rules-Requires-Root: no’, it became default in dpkg 1.22.13.
+  * Update debian/watch to version 5.
+  * Upload to unstable.
+
+ -- Dmitry Shachnev <mitya57@debian.org>  Fri, 24 Oct 2025 13:49:41 +0300
+
+pyqt6-sip (13.10.2-1) experimental; urgency=medium
+
+  * New upstream release.
+  * Bump required setuptools version to 75.8.1, following upstream.
+  * Bump Standards-Version to 4.7.2, no changes needed.
+
+ -- Dmitry Shachnev <mitya57@debian.org>  Fri, 06 Jun 2025 13:58:18 +0300
+
 pyqt6-sip (13.10.0-1) unstable; urgency=medium
 
   * New upstream release.

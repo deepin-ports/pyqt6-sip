@@ -1,2 +1,4 @@
-version=4
-https://pypi.debian.net/PyQt6-sip/[Pp]y[Qq]t6_sip@ANY_VERSION@@ARCHIVE_EXT@
+Version: 5
+
+Source: https://pypi.debian.net/PyQt6-sip/
+Matching-Pattern: pyqt6_sip@ANY_VERSION@@ARCHIVE_EXT@
